@@ -1,0 +1,83 @@
+# A static size cast has the width of the cast, not of its operand
+# (IEEE 1800-2017 6.24.1): N'(e) is e padded or truncated to N bits, and an
+# operator applied to it sees an N-bit operand. Each assertion compares an
+# expression over a narrowing cast, in a place where the width of the
+# expression shows (a concatenation, the operand of a comparison, a shift
+# amount), with the same expression written with a part-select.
+
+read_verilog -sv <<EOT
+module top(
+	input signed [7:0] s,
+	input        [7:0] u,
+	input        [5:0] m,
+	input        [3:0] n,
+	input              c
+);
+	// ?: over a narrowing cast, as an operand of a concatenation
+	wire [6:0] cat_tern     = {1'b1, c ? m : 6'(s)};
+	wire [6:0] cat_tern_ref = {1'b1, c ? m : s[5:0]};
+	wire [6:0] cat_tern_u     = {1'b1, c ? m : 6'(u)};
+	wire [6:0] cat_tern_u_ref = {1'b1, c ? m : u[5:0]};
+	wire [7:0] u_inc = u + 8'd1;
+	wire [6:0] cat_tern_both     = {1'b1, c ? 6'(s) : 6'(u + 8'd1)};
+	wire [6:0] cat_tern_both_ref = {1'b1, c ? s[5:0] : u_inc[5:0]};
+	wire [6:0] cat_tern_cmp     = {1'b1, (s > 8'sd0 + 8'(m)) ? m : 6'(s)};
+	wire [6:0] cat_tern_cmp_ref = {1'b1, (s > 8'sd0 + 8'(m)) ? m : s[5:0]};
+
+	// a bitwise operator over a narrowing cast, in a concatenation
+	wire [1:0] cat_xor     = {1'b1, (1'(n) ^ 1'b0)};
+	wire [1:0] cat_xor_ref = {1'b1, n[0]};
+	wire [4:0] cat_not     = {1'b1, ~(4'(u))};
+	wire [4:0] cat_not_ref = {1'b1, ~u[3:0]};
+
+	// the sum of two 6-bit operands wraps at 6 bits when nothing wider is in
+	// the context
+	wire sum_cmp     = (6'(u) + m) > 6'd10;
+	wire sum_cmp_ref = (u[5:0] + m) > 6'd10;
+	wire [7:0] sum_shamt     = 8'hff >> (2'(n) + 2'd3);
+	wire [7:0] sum_shamt_ref = 8'hff >> (n[1:0] + 2'd3);
+	wire [3:0] sum_repl     = {2{2'(n) + 2'd3}};
+	wire [3:0] sum_repl_ref = {2{n[1:0] + 2'd3}};
+
+	// unchanged: the cast alone, a cast that widens (its operand is evaluated
+	// at the width of the cast), and the signedness of the operand, which
+	// passes through the cast
+	wire [6:0] cat_alone     = {1'b1, 6'(s)};
+	wire [6:0] cat_alone_ref = {1'b1, s[5:0]};
+	wire [8:0] cat_widen     = {1'b1, c ? 8'(m) : u};
+	wire [8:0] cat_widen_ref = {1'b1, c ? {2'b00, m} : u};
+	wire [7:0] widen_op     = 8'(m - 6'd1);
+	wire [7:0] widen_op_ref = {2'b00, m} - 8'd1;
+	wire signed [7:0] sext_tern     = c ? 4'(s) : 4'sd0;
+	wire signed [7:0] sext_tern_ref = c ? $signed(s[3:0]) : 4'sd0;
+	wire [7:0] zext_tern     = c ? 4'(u) : 4'd0;
+	wire [7:0] zext_tern_ref = c ? u[3:0] : 4'd0;
+
+	always @* begin
+		assert (cat_tern == cat_tern_ref);
+		assert (cat_tern_u == cat_tern_u_ref);
+		assert (cat_tern_both == cat_tern_both_ref);
+		assert (cat_tern_cmp == cat_tern_cmp_ref);
+		assert (cat_xor == cat_xor_ref);
+		assert (cat_not == cat_not_ref);
+		assert (sum_cmp == sum_cmp_ref);
+		assert (sum_shamt == sum_shamt_ref);
+		assert (sum_repl == sum_repl_ref);
+
+		assert (cat_alone == cat_alone_ref);
+		assert (cat_widen == cat_widen_ref);
+		assert (widen_op == widen_op_ref);
+		assert (sext_tern == sext_tern_ref);
+		assert (zext_tern == zext_tern_ref);
+
+		assert ($bits(c ? m : 6'(s)) == 6);
+		assert ($bits(6'(u) + m) == 6);
+		assert ($bits(c ? 8'(m) : u) == 8);
+	end
+endmodule
+EOT
+proc
+opt -full
+select -module top
+async2sync
+sat -verify -prove-asserts -show-all
